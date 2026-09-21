@@ -1,0 +1,8 @@
+# Tested baseline; kernel commit is mandatory, package versions are documented.
+FREERTOS_TAG=V11.1.0
+FREERTOS_COMMIT=dbf70559b27d39c1fdb68dfb9a32140b6a6777a0
+ARM_GCC_VERSION=13.2.1
+ARM_GCC_UBUNTU_PACKAGE=15:13.2.rel1-2
+BINUTILS_UBUNTU_PACKAGE=2.42-1ubuntu1+23
+HOST_GXX_VERSION=13.3.0
+QEMU_VERSION=8.2.2
