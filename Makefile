@@ -44,4 +44,9 @@ bootstrap:
 	DEPS_DIR="$(DEPS_DIR)" tools/bootstrap.sh
 clean:
 	rm -rf $(BUILD)
+.PHONY: test
+$(BUILD)/protocol_test: tests/protocol_test.cpp shared/protocol.cpp shared/protocol.hpp shared/bounded_queue.hpp | $(BUILD)
+	$(HOST_CXX) -std=c++17 $(WARN) -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -Ishared tests/protocol_test.cpp shared/protocol.cpp -o $@
+test: $(BUILD)/protocol_test
+	./$(BUILD)/protocol_test
 -include $(wildcard $(BUILD)/*.d)
