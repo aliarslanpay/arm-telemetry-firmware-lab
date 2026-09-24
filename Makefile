@@ -49,17 +49,20 @@ $(BUILD)/protocol_test: tests/protocol_test.cpp shared/protocol.cpp shared/proto
 	$(HOST_CXX) -std=c++17 $(WARN) -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -Ishared tests/protocol_test.cpp shared/protocol.cpp -o $@
 test: $(BUILD)/protocol_test
 	./$(BUILD)/protocol_test
-COMMON_OBJ := $(BUILD)/runtime.o $(BUILD)/startup.o $(BUILD)/reset.o $(BUILD)/platform.o $(BUILD)/protocol.o
+COMMON_OBJ := $(BUILD)/application.o $(BUILD)/runtime.o $(BUILD)/startup.o $(BUILD)/reset.o $(BUILD)/platform.o $(BUILD)/protocol.o
 INCLUDES := -Ishared -Iplatform
 $(BUILD)/platform.o: platform/platform.cpp platform/platform.hpp shared/protocol.hpp shared/bounded_queue.hpp | $(BUILD)
 	$(CROSS)g++ $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/protocol.o: shared/protocol.cpp shared/protocol.hpp | $(BUILD)
 	$(CROSS)g++ $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-$(BUILD)/baremetal.o: firmware/baremetal.cpp platform/platform.hpp shared/protocol.hpp | $(BUILD)
+$(BUILD)/baremetal.o: firmware/baremetal.cpp platform/platform.hpp shared/protocol.hpp shared/application.hpp shared/bounded_queue.hpp | $(BUILD)
 	$(CROSS)g++ $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/baremetal.elf: $(COMMON_OBJ) $(BUILD)/baremetal.o platform/mps2.ld
 	$(CROSS)g++ $(LDFLAGS) $(filter %.o,$^) -Wl,-Map,$@.map -o $@
 
 $(BUILD)/runtime.o: platform/runtime.c | $(BUILD)
 	$(CROSS)gcc $(CFLAGS) -fno-builtin -c $< -o $@
+
+$(BUILD)/application.o: shared/application.cpp shared/application.hpp shared/protocol.hpp | $(BUILD)
+	$(CROSS)g++ $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 -include $(wildcard $(BUILD)/*.d)

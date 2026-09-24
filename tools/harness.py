@@ -7,7 +7,8 @@ import pathlib
 import select
 import subprocess
 import time
-from wire import Frame, Decoder, encode, PING, STOP, ACK
+import struct
+from wire import Frame, Decoder, encode, PING, BURST, STOP, SAMPLE, ACK, STATUS
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class Guest:
@@ -83,16 +84,54 @@ class Guest:
     def __exit__(self, *_):
         self.close()
 
+def ack(guest, seq, command):
+    frame = guest.wait_frame(lambda f: f.kind == ACK and f.sequence == seq)
+    assert frame.payload == bytes([command, 0]), frame
+
+def stop(guest, seq):
+    guest.send(Frame(STOP, seq))
+    ack(guest, seq, STOP)
+    status = guest.wait_frame(lambda f: f.kind == STATUS and f.sequence == seq)
+    assert len(status.payload) == 32
+    assert guest.process.wait(timeout=3) == 0
+    return struct.unpack("<8I", status.payload)
+
 def smoke(image):
     with Guest(image) as guest:
-        guest.send(Frame(PING, 17))
-        assert guest.wait_frame(lambda f: f.kind == ACK and f.sequence == 17).payload == b""
-        guest.send(Frame(STOP, 18))
-        guest.wait_frame(lambda f: f.kind == ACK and f.sequence == 18)
+        guest.send(Frame(PING, 17)); ack(guest, 17, PING)
+        stats = stop(guest, 18)
+        assert stats[0] == 2 and not any(stats[1:5])
+    print(f"PASS {image.name}: UART IRQ round-trip; clean stop")
+
+def auto_demo(image):
+    with Guest(image) as guest:
+        status = guest.wait_frame(lambda f: f.kind == STATUS, timeout=6)
+        samples = [f for f in guest.frames if f.kind == SAMPLE]
+        stats = struct.unpack("<8I", status.payload)
+        assert [f.sequence for f in samples] == list(range(1, 31))
+        assert [struct.unpack("<3I", f.payload)[0] for f in samples] == list(range(1, 31))
+        assert all(struct.unpack("<3I", f.payload)[1:] == ((f.sequence * 17 + 23) % 1000, 0) for f in samples)
+        assert stats == (0, 0, 0, 0, 0, 30, 0, 0), stats
         assert guest.process.wait(timeout=3) == 0
-    print("PASS baremetal: UART ISR -> bounded byte ring -> parser -> ACK; clean stop")
+    print(f"PASS {image.name}: bounded automatic demo, 30 timer samples, no loss")
+
+def overload(image):
+    with Guest(image) as guest:
+        guest.send(Frame(BURST, 20, bytes([32]))); ack(guest, 20, BURST)
+        burst = [f for f in guest.frames if f.kind == SAMPLE and struct.unpack("<3I", f.payload)[2] == 1]
+        assert len(burst) == 8, burst
+        assert [f.sequence for f in burst] == list(range(burst[0].sequence, burst[0].sequence + 8)), burst
+        guest.send(Frame(PING, 21)); ack(guest, 21, PING)
+        stats = stop(guest, 22)
+        assert stats[6] == 24 and not any(stats[1:5]) and stats[7] == 0, stats
+    print(f"PASS {image.name}: 32-sample burst retains first 8, drops newest 24, continues")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=pathlib.Path, default=ROOT / "build/baremetal.elf")
-    smoke(parser.parse_args().image)
+    parser.add_argument("--scenario", choices=["smoke", "auto", "overload", "all"], default="all")
+    args = parser.parse_args()
+    scenarios = {"smoke": smoke, "auto": auto_demo, "overload": overload}
+    for name, test in scenarios.items():
+        if args.scenario in (name, "all"):
+            test(args.image)

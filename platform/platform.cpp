@@ -3,9 +3,12 @@
 #include "bounded_queue.hpp"
 namespace {
 volatile uint32_t *const uart = reinterpret_cast<volatile uint32_t *>(0x40004000);
+volatile uint32_t *const timer = reinterpret_cast<volatile uint32_t *>(0x40000000);
 telemetry::BoundedQueue<uint8_t, 128> rx{};
 board::InputStats rx_stats{};
 bool lost{};
+telemetry::BoundedQueue<uint32_t, 4> ticks{};
+uint32_t timer_count{}, timer_lost{};
 void put_byte(uint8_t b) { while (uart[1] & 1) {} uart[0] = b; }
 }
 namespace board {
@@ -35,7 +38,19 @@ bool input_recover() {
     irq_restore(mask); return was_lost;
 }
 InputStats input_stats() { auto mask = irq_save(); auto s = rx_stats; irq_restore(mask); return s; }
+void timer_start(uint32_t hz) {
+    timer[0] = 0; timer[2] = kClockHz / hz; timer[3] = 1;
+    reinterpret_cast<volatile uint8_t *>(0xe000e400)[8] = 0x80;
+    *reinterpret_cast<volatile uint32_t *>(0xe000e100) = 1 << 8;
+    timer[0] = 1 | 8; // Enable and interrupt, internal APB clock.
+}
+bool timer_pop(uint32_t &tick) { auto mask = irq_save(); bool ok = ticks.pop(tick); irq_restore(mask); return ok; }
+uint32_t timer_ticks() { auto mask = irq_save(); auto value = timer_count; irq_restore(mask); return value; }
+uint32_t timer_drops() { auto mask = irq_save(); auto value = timer_lost; irq_restore(mask); return value; }
+bool work_pending() { auto mask = irq_save(); bool ready = rx.count || ticks.count || lost; irq_restore(mask); return ready; }
+void timer_stop() { timer[0] = 0; }
 void stop(uint32_t status) {
+    timer_stop();
     const uint32_t args[2] = {0x20026, status};
     register uint32_t r0 __asm("r0") = 0x20;
     register const uint32_t *r1 __asm("r1") = args;
@@ -58,3 +73,11 @@ extern "C" void UART0_Handler() {
 }
 extern "C" __attribute__((weak)) void input_wake_from_isr() {}
 extern "C" void platform_fault() { board::text("FAULT\n"); board::stop(2); }
+
+extern "C" void Timer0_Handler() {
+    timer[3] = 1;
+    ++timer_count;
+    if (!ticks.push(timer_count)) ++timer_lost;
+    timer_wake_from_isr();
+}
+extern "C" __attribute__((weak)) void timer_wake_from_isr() {}
