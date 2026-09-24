@@ -13,7 +13,7 @@ CFLAGS := $(FREESTANDING) $(WARN) -std=c11
 CXXFLAGS := $(FREESTANDING) $(WARN) -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-unwind-tables -fno-asynchronous-unwind-tables
 LDFLAGS := $(CPU) -nostdlib -Wl,--gc-sections -T platform/mps2.ld
 .PHONY: all boot-smoke clean bootstrap
-all: $(BUILD)/boot.elf $(BUILD)/baremetal.elf
+all: $(BUILD)/boot.elf $(BUILD)/baremetal.elf $(BUILD)/freertos.elf
 $(BUILD):
 	mkdir -p $@
 $(BUILD)/startup.o: platform/startup.S | $(BUILD)
@@ -65,4 +65,21 @@ $(BUILD)/runtime.o: platform/runtime.c | $(BUILD)
 
 $(BUILD)/application.o: shared/application.cpp shared/application.hpp shared/protocol.hpp | $(BUILD)
 	$(CROSS)g++ $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+RTOS_INC := $(INCLUDES) -Irtos -I$(KERNEL)/include -I$(KERNEL)/portable/GCC/ARM_CM3
+RTOS_SRC := tasks queue list
+RTOS_OBJ := $(addprefix $(BUILD)/kernel-,$(addsuffix .o,$(RTOS_SRC))) $(BUILD)/port.o $(BUILD)/hooks.o
+.PHONY: kernel-check
+kernel-check:
+	@test "$$(git -C "$(KERNEL)" rev-parse HEAD)" = dbf70559b27d39c1fdb68dfb9a32140b6a6777a0 || { echo 'Run make bootstrap; kernel pin mismatch' >&2; exit 1; }
+	@git -C "$(KERNEL)" diff --quiet HEAD -- tasks.c queue.c list.c include portable/GCC/ARM_CM3 || { echo 'Kernel source modified' >&2; exit 1; }
+$(BUILD)/kernel-%.o: $(KERNEL)/%.c rtos/FreeRTOSConfig.h | $(BUILD) kernel-check
+	$(CROSS)gcc $(CFLAGS) $(RTOS_INC) -c $< -o $@
+$(BUILD)/port.o: $(KERNEL)/portable/GCC/ARM_CM3/port.c rtos/FreeRTOSConfig.h | $(BUILD) kernel-check
+	$(CROSS)gcc $(CFLAGS) $(RTOS_INC) -c $< -o $@
+$(BUILD)/hooks.o: rtos/hooks.c rtos/FreeRTOSConfig.h | $(BUILD)
+	$(CROSS)gcc $(CFLAGS) $(RTOS_INC) -c $< -o $@
+$(BUILD)/freertos.o: firmware/freertos.cpp rtos/FreeRTOSConfig.h platform/platform.hpp shared/application.hpp | $(BUILD)
+	$(CROSS)g++ $(CXXFLAGS) $(RTOS_INC) -c $< -o $@
+$(BUILD)/freertos.elf: $(COMMON_OBJ) $(RTOS_OBJ) $(BUILD)/freertos.o platform/mps2.ld
+	$(CROSS)g++ $(LDFLAGS) $(filter %.o,$^) -Wl,-Map,$@.map -o $@
 -include $(wildcard $(BUILD)/*.d)

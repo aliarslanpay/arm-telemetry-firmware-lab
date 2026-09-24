@@ -112,6 +112,11 @@ def auto_demo(image):
         assert [struct.unpack("<3I", f.payload)[0] for f in samples] == list(range(1, 31))
         assert all(struct.unpack("<3I", f.payload)[1:] == ((f.sequence * 17 + 23) % 1000, 0) for f in samples)
         assert stats == (0, 0, 0, 0, 0, 30, 0, 0), stats
+        if image.name == "freertos.elf":
+            resources = guest.wait_frame(lambda f: f.kind == 0x84)
+            watermarks = struct.unpack("<4I", resources.payload)
+            assert all(0 < free <= budget for free, budget in zip(watermarks, (256, 512, 384, 128)))
+            print("STACK unused_words acquisition,processing,output,idle=" + str(watermarks))
         assert guest.process.wait(timeout=3) == 0
     print(f"PASS {image.name}: bounded automatic demo, 30 timer samples, no loss")
 

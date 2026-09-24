@@ -20,7 +20,7 @@ uint32_t irq_save() {
 void irq_restore(uint32_t mask) { __asm volatile("msr primask, %0" :: "r"(mask) : "memory"); }
 void uart_init() { uart[2] = 0; uart[4] = kClockHz / 115200; uart[3] = 15; uart[1] = 12; uart[2] = 3; }
 void enable_input() {
-    // UART RX interrupt uses NVIC priority 0x80.
+    // Numeric priority 0x80 is lower urgency than FreeRTOS syscall threshold 0x40.
     reinterpret_cast<volatile uint8_t *>(0xe000e400)[0] = 0x80;
     *reinterpret_cast<volatile uint32_t *>(0xe000e100) = 1;
     uart[2] = 3 | 8; // TX, RX, RX interrupt. Hardware overruns checked in RX ISR.
