@@ -1,0 +1,20 @@
+name: firmware-emulation
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  host-and-qemu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned compiler and QEMU packages
+        run: tools/install_ubuntu.sh
+      - name: Fetch and verify pinned upstream kernel
+        run: make bootstrap
+      - name: Build and verify
+        run: make HOST_CXX=g++-13 verify
+      # Runtime tests require QEMU system ARM with MPS2 AN385 and semihosting.
+      # Every guest has bounded host deadlines. No board, KVM, sockets, cloud,
+      # privileged device access, or self-hosted runner is needed.
+      # Physical interrupt latency, power and hardware tests are intentionally skipped.

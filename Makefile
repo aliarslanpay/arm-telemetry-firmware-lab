@@ -13,7 +13,7 @@ CFLAGS := $(FREESTANDING) $(WARN) -std=c11
 CXXFLAGS := $(FREESTANDING) $(WARN) -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-unwind-tables -fno-asynchronous-unwind-tables
 LDFLAGS := $(CPU) -nostdlib -Wl,--gc-sections -T platform/mps2.ld
 .PHONY: all boot-smoke clean bootstrap
-all: $(BUILD)/boot.elf $(BUILD)/baremetal.elf $(BUILD)/freertos.elf
+all: $(BUILD)/boot.elf $(BUILD)/baremetal.elf $(BUILD)/freertos.elf $(BUILD)/inversion.elf
 $(BUILD):
 	mkdir -p $@
 $(BUILD)/startup.o: platform/startup.S | $(BUILD)
@@ -82,4 +82,23 @@ $(BUILD)/freertos.o: firmware/freertos.cpp rtos/FreeRTOSConfig.h platform/platfo
 	$(CROSS)g++ $(CXXFLAGS) $(RTOS_INC) -c $< -o $@
 $(BUILD)/freertos.elf: $(COMMON_OBJ) $(RTOS_OBJ) $(BUILD)/freertos.o platform/mps2.ld
 	$(CROSS)g++ $(LDFLAGS) $(filter %.o,$^) -Wl,-Map,$@.map -o $@
+$(BUILD)/inversion.o: firmware/inversion.cpp rtos/FreeRTOSConfig.h platform/platform.hpp | $(BUILD)
+	$(CROSS)g++ $(CXXFLAGS) $(RTOS_INC) -c $< -o $@
+$(BUILD)/inversion.elf: $(COMMON_OBJ) $(RTOS_OBJ) $(BUILD)/inversion.o platform/mps2.ld
+	$(CROSS)g++ $(LDFLAGS) $(filter %.o,$^) -Wl,-Map,$@.map -o $@
+
+.PHONY: integration check-images verify demo-baremetal demo-freertos experiment
+integration: all
+	QEMU="$(QEMU)" timeout 20 python3 tools/harness.py --image $(BUILD)/baremetal.elf --scenario all
+	QEMU="$(QEMU)" timeout 20 python3 tools/harness.py --image $(BUILD)/freertos.elf --scenario all
+	QEMU="$(QEMU)" timeout 10 python3 tools/harness.py --image $(BUILD)/inversion.elf --scenario inversion
+check-images: all
+	CROSS="$(CROSS)" python3 tools/check_images.py
+verify: test boot-smoke integration check-images check-constructors
+demo-baremetal: $(BUILD)/baremetal.elf
+	QEMU="$(QEMU)" timeout 10 python3 tools/harness.py --image $< --scenario auto
+demo-freertos: $(BUILD)/freertos.elf
+	QEMU="$(QEMU)" timeout 10 python3 tools/harness.py --image $< --scenario auto
+experiment: $(BUILD)/inversion.elf
+	QEMU="$(QEMU)" timeout 10 python3 tools/harness.py --image $< --scenario inversion
 -include $(wildcard $(BUILD)/*.d)

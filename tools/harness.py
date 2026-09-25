@@ -8,7 +8,8 @@ import select
 import subprocess
 import time
 import struct
-from wire import Frame, Decoder, encode, PING, BURST, STOP, SAMPLE, ACK, STATUS
+import binascii
+from wire import Frame, Decoder, encode, wrap, PING, BURST, STOP, SAMPLE, ACK, STATUS
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class Guest:
@@ -131,12 +132,57 @@ def overload(image):
         assert stats[6] == 24 and not any(stats[1:5]) and stats[7] == 0, stats
     print(f"PASS {image.name}: 32-sample burst retains first 8, drops newest 24, continues")
 
+def faults(image):
+    with Guest(image) as guest:
+        fragment = encode(Frame(PING, 0x7E7D0100))
+        for chunk in (fragment[:3], fragment[3:8], fragment[8:-1], fragment[-1:]):
+            guest.send_bytes(chunk)
+            time.sleep(0.002)
+        ack(guest, 0x7E7D0100, PING)
+        header = struct.pack("<BBHI", 1, PING, 0, 200)
+        guest.send_bytes(wrap(header + struct.pack("<H", binascii.crc_hqx(header, 0xFFFF) ^ 1)))
+        guest.send(Frame(PING, 201)); ack(guest, 201, PING)
+        oversized = struct.pack("<BBHI", 1, PING, 33, 202) + bytes(33)
+        guest.send_bytes(wrap(oversized + struct.pack("<H", binascii.crc_hqx(oversized, 0xFFFF))))
+        guest.send(Frame(PING, 203)); ack(guest, 203, PING)
+        guest.send_bytes(bytes([0x7E, 1, PING, 0, 0x7E]))
+        guest.send(Frame(PING, 204)); ack(guest, 204, PING)
+        version = struct.pack("<BBHI", 2, PING, 0, 2050)
+        guest.send_bytes(wrap(version + struct.pack("<H", binascii.crc_hqx(version, 0xFFFF))))
+        guest.send(Frame(PING, 205)); ack(guest, 205, PING)
+        for kind, seq, payload in ((BURST, 206, bytes([33])), (0x44, 207, b"")):
+            guest.send(Frame(kind, seq, payload))
+            response = guest.wait_frame(lambda f: f.kind == ACK and f.sequence == seq)
+            assert response.payload == bytes([kind, 1])
+        assert not any(f.kind == ACK and f.sequence in (200, 202, 2050) for f in guest.frames)
+        stats = stop(guest, 208)
+        assert stats[:5] == (8, 1, 1, 4, 0) and stats[6:] == (0, 0), stats
+    print(f"PASS {image.name}: fragmented escaped header; CRC/length/truncation/version/command faults recover; counters={stats}")
+
+def inversion(image):
+    command = [os.environ.get("QEMU", "qemu-system-arm"), "-M", "mps2-an385", "-display", "none",
+               "-monitor", "none", "-serial", "stdio", "-semihosting-config", "enable=on,target=native", "-kernel", str(image)]
+    result = subprocess.run(command, input=b"", capture_output=True, timeout=5, check=True)
+    lines = result.stdout.decode().splitlines()
+    expected = {
+        "binary": ["LOW_LOCK", "HIGH_WAIT", "MEDIUM_RUN", "LOW_RUN priority=1", "HIGH_LOCK", "DONE"],
+        "mutex": ["LOW_LOCK", "HIGH_WAIT", "LOW_RUN priority=3", "HIGH_LOCK", "MEDIUM_RUN", "DONE"],
+    }
+    for phase, events in expected.items():
+        actual = [line.removeprefix(f"EVENT {phase} ") for line in lines if line.startswith(f"EVENT {phase} ")]
+        assert actual == events, (phase, actual)
+    watermarks = [int(line.split("=")[1]) for line in lines if line.startswith("WATERMARK ")]
+    assert len(watermarks) == 4 and all(n > 0 for n in watermarks), lines
+    assert lines[-1] == "EXPERIMENT_OK", lines
+    print(result.stdout.decode(), end="")
+    print("PASS inversion: both exact event orders and inherited low-task priority asserted")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=pathlib.Path, default=ROOT / "build/baremetal.elf")
-    parser.add_argument("--scenario", choices=["smoke", "auto", "overload", "all"], default="all")
+    parser.add_argument("--scenario", choices=["smoke", "auto", "overload", "faults", "inversion", "all"], default="all")
     args = parser.parse_args()
-    scenarios = {"smoke": smoke, "auto": auto_demo, "overload": overload}
+    scenarios = {"smoke": smoke, "auto": auto_demo, "overload": overload, "faults": faults, "inversion": inversion}
     for name, test in scenarios.items():
-        if args.scenario in (name, "all"):
+        if args.scenario == name or (args.scenario == "all" and name != "inversion"):
             test(args.image)
